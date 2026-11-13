@@ -32,86 +32,107 @@ def _body(k):
     return (k.c - k.o).abs()
 
 
-def _p_engulf(k):       # =IF(AND(B2>E2,B3<E3,B3<=E2,E3>=B2),"BULLISH ENGULFING ","")
+def _rng(k):
+    return k.h - k.l
+
+
+# Word-file rule for Three White Soldiers (ENTRY RULE section)
+SOLDIER_GAP_MIN = 0.995     # open >= prev_open * 0.995   (gap-down open reject)
+SOLDIER_WICK_MAX = 0.30     # upper wick <= 30% of day range (near-high close)
+SOLDIER_BODY_MIN = 0.20     # body >= 20% of day range       (strong body, doji reject)
+TWEEZER_LOW_TOL = 0.001     # two lows count as "the same" when within 0.1%
+DOWNTREND_LOOKBACK = 5      # "in a downtrend": close before the pattern < close this many candles earlier
+DOWNTREND_PATTERNS = ("Bullish Engulfing", "Hammer")      # the Word file asks for a downtrend only for these two
+
+
+def _p_engulf(k):       # small bearish candle completely engulfed by a large bullish candle (downtrend filter applied in detect_patterns)
     a, b = k
-    return (a.o > a.c) & (b.o < b.c) & (b.o <= a.c) & (b.c >= a.o)
+    return (a.o > a.c) & (b.o < b.c) & (b.o <= a.c) & (b.c >= a.o) & (_body(b) > _body(a))
 
 
-def _p_harami(k):       # =IF(AND(B3>E3,B4<E4,B4>E3,E4<B3),"BULLISH harami","")
+def _p_harami(k):       # small bullish candle completely inside the body of the preceding large bearish candle
     a, b = k
     return (a.o > a.c) & (b.o < b.c) & (b.o > a.c) & (b.c < a.o)
 
 
-def _p_marubozu(k):     # =IF(AND(E2>B2,(B2-D2)<=0.05*(E2-B2),(C2-E2)<=0.05*(E2-B2)),"Bullish Marubozu","")
+def _p_marubozu(k):     # bullish, closes near its high, little/no shadow on either end
     (a,) = k
     return (a.c > a.o) & ((a.o - a.l) <= 0.05 * (a.c - a.o)) & ((a.h - a.c) <= 0.05 * (a.c - a.o))
 
 
-def _p_hammer(k):       # =IF(AND((C2-D2)>=2*ABS(E2-B2),(MIN(B2,E2)-D2)>=2*ABS(E2-B2),(C2-MAX(B2,E2))<=0.1*ABS(E2-B2)),"HAMMER","")
+def _p_hammer(k):       # small body at the top of the range, lower shadow >= 2x body (downtrend filter applied in detect_patterns)
     (a,) = k
     bd = _body(a)
-    return ((a.h - a.l) >= 2 * bd) & ((np.minimum(a.o, a.c) - a.l) >= 2 * bd) & ((a.h - np.maximum(a.o, a.c)) <= 0.1 * bd)
+    return ((a.h - a.l) > 0) & ((np.minimum(a.o, a.c) - a.l) >= 2 * bd) & ((a.h - np.maximum(a.o, a.c)) <= 0.1 * bd)
 
 
-def _p_inv_hammer(k):   # =IF(AND((C2-MAX(B2,E2))>=2*ABS(E2-B2),(C2-D2)>=2*ABS(E2-B2),(MIN(B2,E2)-D2)<=0.1*ABS(E2-B2)),"INVERTED HAMMER","")
-    (a,) = k
-    bd = _body(a)
-    return ((a.h - np.maximum(a.o, a.c)) >= 2 * bd) & ((a.h - a.l) >= 2 * bd) & ((np.minimum(a.o, a.c) - a.l) <= 0.1 * bd)
-
-
-def _p_morning(k):      # =IF(AND(E2<B2,ABS(E3-B3)<=0.5*ABS(E2-B2),E4>B4,E4>=B2-0.5*(B2-E2)),"MORNING STAR","")
-    a, b, c = k
-    return (a.c < a.o) & (_body(b) <= 0.5 * _body(a)) & (c.c > c.o) & (c.c >= a.o - 0.5 * (a.o - a.c))
-
-
-def _p_piercing(k):     # =IF(AND(E2<B2,E3>B3,E3>B2-(B2-E2)/2,E3<B2),"PIERCING","")
+def _p_inv_hammer(k):   # small body at the bottom of the range, long upper shadow  +  NEXT candle closes bullish (confirmation)
     a, b = k
-    return (a.c < a.o) & (b.c > b.o) & (b.c > a.o - (a.o - a.c) / 2) & (b.c < a.o)
+    bd = _body(a)
+    return (((a.h - a.l) > 0) & ((a.h - np.maximum(a.o, a.c)) >= 2 * bd) & ((np.minimum(a.o, a.c) - a.l) <= 0.1 * bd)
+            & (b.c > b.o))
 
 
-def _p_rising3(k):      # =IF(AND(E2>B2, 3 small candles (body<=0.5*first body) inside first candle's high/low, E6>B6, E6>E2),...)
+def _p_morning(k):      # bearish, small GAP-DOWN middle candle, strong bullish 3rd candle closing past the middle of the 1st body
+    a, b, c = k
+    return ((a.c < a.o) & (_body(b) <= 0.5 * _body(a)) & (np.maximum(b.o, b.c) < a.c)
+            & (c.c > c.o) & (_body(c) >= 0.5 * _rng(c)) & (c.c >= a.o - 0.5 * (a.o - a.c)))
+
+
+def _p_piercing(k):     # bullish candle opens below the previous low, closes above the middle of the prior bearish body
+    a, b = k
+    return (a.c < a.o) & (b.c > b.o) & (b.o < a.l) & (b.c > a.o - (a.o - a.c) / 2) & (b.c < a.o)
+
+
+def _p_rising3(k):      # long bullish, 3 small BEARISH candles inside its range, 5th bullish candle closes above the 1st candle's HIGH
     a, b, c, d, e = k
     ok = a.c > a.o
     for m in (b, c, d):
-        ok = ok & (_body(m) <= 0.5 * _body(a)) & (m.h <= a.h) & (m.l >= a.l)
-    return ok & (e.c > e.o) & (e.c > a.c)
+        ok = ok & (m.c < m.o) & (_body(m) <= 0.5 * _body(a)) & (m.h <= a.h) & (m.l >= a.l)
+    return ok & (e.c > e.o) & (e.c > a.h)
 
 
-def _p_soldiers(k):     # =IF(AND(E2>B2,E3>B3,E4>B4,E3>E2,E4>E3,B3>=B2,B3<=E2,B4>=B3,B4<=E3),"THREE WHITE SOLDIERS","")
+def _p_soldiers(k):     # Word ENTRY RULE: bullish, rising closes, no gap-down open, near-high close, strong body (every candle)
     a, b, c = k
-    return ((a.c > a.o) & (b.c > b.o) & (c.c > c.o) & (b.c > a.c) & (c.c > b.c)
-            & (b.o >= a.o) & (b.o <= a.c) & (c.o >= b.o) & (c.o <= b.c))
+    ok = (b.c > a.c) & (c.c > b.c) & (b.o >= a.o * SOLDIER_GAP_MIN) & (c.o >= b.o * SOLDIER_GAP_MIN)
+    for m in (a, b, c):
+        r = _rng(m)
+        ok = ok & (m.c > m.o) & (r > 0) & ((m.h - m.c) <= SOLDIER_WICK_MAX * r) & (_body(m) >= SOLDIER_BODY_MIN * r)
+    return ok
 
 
-def _p_tweezer(k):      # =IF(AND(E2<B2,E3>B3,ABS(D3-D2)<=0.001*D2),"TWEEZER BOTTOM","")
-    a, b = k
-    return (a.c < a.o) & (b.c > b.o) & ((b.l - a.l).abs() <= 0.001 * a.l)
+def _p_tweezer(k):      # two candles share the same low, followed by a bullish confirmation candle
+    a, b, c = k
+    return ((b.l - a.l).abs() <= TWEEZER_LOW_TOL * a.l) & (c.c > c.o)
 
 
-# (name, candles used, python check, Excel formula builder: rows -> formula)
+# (name, candles used, python check, Excel/Sheets formula builder: rows -> formula)   Excel columns: B=Open C=High D=Low E=Close
+# (the downtrend condition for Engulfing / Hammer is applied in Python only - see DOWNTREND_PATTERNS)
 PATTERN_DEFS = (
     ("Bullish Engulfing", 2, _p_engulf,
-     lambda r: f'=IF(AND(B{r[0]}>E{r[0]},B{r[1]}<E{r[1]},B{r[1]}<=E{r[0]},E{r[1]}>=B{r[0]}),"BULLISH ENGULFING ","")'),
+     lambda r: f'=IF(AND(B{r[0]}>E{r[0]},B{r[1]}<E{r[1]},B{r[1]}<=E{r[0]},E{r[1]}>=B{r[0]},ABS(E{r[1]}-B{r[1]})>ABS(E{r[0]}-B{r[0]})),"BULLISH ENGULFING ","")'),
     ("Bullish Harami", 2, _p_harami,
      lambda r: f'=IF(AND(B{r[0]}>E{r[0]},B{r[1]}<E{r[1]},B{r[1]}>E{r[0]},E{r[1]}<B{r[0]}),"BULLISH harami","")'),
     ("Bullish Marubozu", 1, _p_marubozu,
      lambda r: f'=IF(AND(E{r[0]}>B{r[0]},(B{r[0]}-D{r[0]})<=0.05*(E{r[0]}-B{r[0]}),(C{r[0]}-E{r[0]})<=0.05*(E{r[0]}-B{r[0]})),"Bullish Marubozu","")'),
     ("Hammer", 1, _p_hammer,
-     lambda r: f'=IF(AND((C{r[0]}-D{r[0]})>=2*ABS(E{r[0]}-B{r[0]}),(MIN(B{r[0]},E{r[0]})-D{r[0]})>=2*ABS(E{r[0]}-B{r[0]}),(C{r[0]}-MAX(B{r[0]},E{r[0]}))<=0.1*ABS(E{r[0]}-B{r[0]})),"HAMMER","")'),
-    ("Inverted Hammer", 1, _p_inv_hammer,
-     lambda r: f'=IF(AND((C{r[0]}-MAX(B{r[0]},E{r[0]}))>=2*ABS(E{r[0]}-B{r[0]}),(C{r[0]}-D{r[0]})>=2*ABS(E{r[0]}-B{r[0]}),(MIN(B{r[0]},E{r[0]})-D{r[0]})<=0.1*ABS(E{r[0]}-B{r[0]})),"INVERTED HAMMER","")'),
+     lambda r: f'=IF(AND(C{r[0]}>D{r[0]},(MIN(B{r[0]},E{r[0]})-D{r[0]})>=2*ABS(E{r[0]}-B{r[0]}),(C{r[0]}-MAX(B{r[0]},E{r[0]}))<=0.1*ABS(E{r[0]}-B{r[0]})),"HAMMER","")'),
+    ("Inverted Hammer", 2, _p_inv_hammer,
+     lambda r: f'=IF(AND(C{r[0]}>D{r[0]},(C{r[0]}-MAX(B{r[0]},E{r[0]}))>=2*ABS(E{r[0]}-B{r[0]}),(MIN(B{r[0]},E{r[0]})-D{r[0]})<=0.1*ABS(E{r[0]}-B{r[0]}),E{r[1]}>B{r[1]}),"INVERTED HAMMER","")'),
     ("Morning Star", 3, _p_morning,
-     lambda r: f'=IF(AND(E{r[0]}<B{r[0]},ABS(E{r[1]}-B{r[1]})<=0.5*ABS(E{r[0]}-B{r[0]}),E{r[2]}>B{r[2]},E{r[2]}>=B{r[0]}-0.5*(B{r[0]}-E{r[0]})),"MORNING STAR","")'),
+     lambda r: f'=IF(AND(E{r[0]}<B{r[0]},ABS(E{r[1]}-B{r[1]})<=0.5*ABS(E{r[0]}-B{r[0]}),MAX(B{r[1]},E{r[1]})<E{r[0]},E{r[2]}>B{r[2]},ABS(E{r[2]}-B{r[2]})>=0.5*(C{r[2]}-D{r[2]}),E{r[2]}>=B{r[0]}-0.5*(B{r[0]}-E{r[0]})),"MORNING STAR","")'),
     ("Piercing", 2, _p_piercing,
-     lambda r: f'=IF(AND(E{r[0]}<B{r[0]},E{r[1]}>B{r[1]},E{r[1]}>B{r[0]}-(B{r[0]}-E{r[0]})/2,E{r[1]}<B{r[0]}),"PIERCING","")'),
+     lambda r: f'=IF(AND(E{r[0]}<B{r[0]},E{r[1]}>B{r[1]},B{r[1]}<D{r[0]},E{r[1]}>B{r[0]}-(B{r[0]}-E{r[0]})/2,E{r[1]}<B{r[0]}),"PIERCING","")'),
     ("Rising Three Methods", 5, _p_rising3,
-     lambda r: (f'=IF(AND(E{r[0]}>B{r[0]},ABS(E{r[1]}-B{r[1]})<=0.5*ABS(E{r[0]}-B{r[0]}),ABS(E{r[2]}-B{r[2]})<=0.5*ABS(E{r[0]}-B{r[0]}),'
-                f'ABS(E{r[3]}-B{r[3]})<=0.5*ABS(E{r[0]}-B{r[0]}),C{r[1]}<=C{r[0]},D{r[1]}>=D{r[0]},C{r[2]}<=C{r[0]},D{r[2]}>=D{r[0]},'
-                f'C{r[3]}<=C{r[0]},D{r[3]}>=D{r[0]},E{r[4]}>B{r[4]},E{r[4]}>E{r[0]}),"RISING THREE METHODS","")')),
+     lambda r: (f'=IF(AND(E{r[0]}>B{r[0]},'
+                + ','.join(f'E{x}<B{x},ABS(E{x}-B{x})<=0.5*ABS(E{r[0]}-B{r[0]}),C{x}<=C{r[0]},D{x}>=D{r[0]}' for x in r[1:4])
+                + f',E{r[4]}>B{r[4]},E{r[4]}>C{r[0]}),"RISING THREE METHODS","")')),
     ("Three White Soldiers", 3, _p_soldiers,
-     lambda r: f'=IF(AND(E{r[0]}>B{r[0]},E{r[1]}>B{r[1]},E{r[2]}>B{r[2]},E{r[1]}>E{r[0]},E{r[2]}>E{r[1]},B{r[1]}>=B{r[0]},B{r[1]}<=E{r[0]},B{r[2]}>=B{r[1]},B{r[2]}<=E{r[1]}),"THREE WHITE SOLDIERS","")'),
-    ("Tweezer Bottom", 2, _p_tweezer,
-     lambda r: f'=IF(AND(E{r[0]}<B{r[0]},E{r[1]}>B{r[1]},ABS(D{r[1]}-D{r[0]})<=0.001*D{r[0]}),"TWEEZER BOTTOM","")'),
+     lambda r: ('=IF(AND(' + ','.join(
+         f'E{x}>B{x},C{x}>D{x},(C{x}-E{x})<={SOLDIER_WICK_MAX}*(C{x}-D{x}),(E{x}-B{x})>={SOLDIER_BODY_MIN}*(C{x}-D{x})' for x in r)
+         + f',E{r[1]}>E{r[0]},E{r[2]}>E{r[1]},B{r[1]}>=B{r[0]}*{SOLDIER_GAP_MIN},B{r[2]}>=B{r[1]}*{SOLDIER_GAP_MIN}),"THREE WHITE SOLDIERS","")')),
+    ("Tweezer Bottom", 3, _p_tweezer,
+     lambda r: f'=IF(AND(ABS(D{r[1]}-D{r[0]})<={TWEEZER_LOW_TOL}*D{r[0]},E{r[2]}>B{r[2]}),"TWEEZER BOTTOM","")'),
 )
 PATTERNS = tuple(d[0] for d in PATTERN_DEFS)
 
@@ -229,7 +250,7 @@ def session_done(now):
 
 
 # ============================== PATTERNS ==============================
-def detect_patterns(df, cfg=None):
+def detect_patterns(df, cfg=None, downtrend=True):
     """True/False per candle for every pattern: the pattern ENDS on that candle (its last candle)."""
     o, h, l, c = (df[x].astype(float) for x in ("open", "high", "low", "close"))
 
@@ -241,8 +262,13 @@ def detect_patterns(df, cfg=None):
         index=df.index,
     )
     lb = int(getattr(cfg, "trend_lookback", 0) or 0)
-    if lb > 0:
+    if lb > 0:                                              # optional extra filter for ALL patterns (off by default)
         sig = sig.mul(c.shift(1) < c.shift(lb + 1), axis=0).astype(bool)
+    n_of = {name: n for name, n, _, _ in PATTERN_DEFS}
+    for name in (DOWNTREND_PATTERNS if downtrend else ()):  # Word file: only these need "in a downtrend"
+        if name in sig.columns:
+            n = n_of[name]                                  # candle just before the pattern vs DOWNTREND_LOOKBACK candles earlier
+            sig[name] = sig[name].astype(bool) & (c.shift(n) < c.shift(n + DOWNTREND_LOOKBACK)).fillna(False)
     return sig.fillna(False).astype(bool)
 
 
@@ -261,7 +287,7 @@ def classify_candles(r, only=None):
         return None
     if df.empty or df.iloc[-1].isna().any():
         return None
-    sig = detect_patterns(df)
+    sig = detect_patterns(df, downtrend=False)              # saved hist is too short for the downtrend check
     names = [n for n in (only or PATTERNS) if n in sig.columns and bool(sig[n].iat[-1])]
     return " + ".join(names) if names else "No pattern"
 
@@ -589,7 +615,7 @@ SENSEX30 = set(
     "INFY ITC KOTAKBANK LT M&M MARUTI NESTLEIND NTPC POWERGRID RELIANCE SBIN SUNPHARMA TATAMOTORS TATASTEEL TCS "
     "TECHM TITAN TRENT ULTRACEMCO".split()
 )
-MCX_MAIN = set("GOLD GOLDM SILVER SILVERM CRUDEOIL CRUDEOILM NATURALGAS COPPER ZINC ALUMINIUM LEAD NICKEL".split())
+MCX_MAIN = set("GOLD GOLDM GOLDPETAL SILVER SILVERM CRUDEOIL CRUDEOILM NATURALGAS COPPER ZINC ALUMINIUM LEAD NICKEL".split())
 NFO_INDEX = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
 
 
@@ -945,13 +971,11 @@ def _bt_candidates(it, df, cfg, start, end, order):
     pats = [p for p in cfg.patterns if p in sig.columns]
     if not pats or len(df) < 3:
         return [], []
-    cloud_sel = cloud_list(cfg.cloud_filter)
-    cpos = None
-    if cloud_sel:
-        cl = ichimoku_cloud(df)
-        close = df["close"].astype(float)
-        cpos = np.where(cl["top"].isna(), "n/a", np.where(close > cl["top"], "Above",
-                        np.where(close < cl["bottom"], "Below", "Center")))
+    cloud_sel = cloud_list(cfg.cloud_filter)                # optional filter (off by default); the cloud column is ALWAYS filled
+    cl = ichimoku_cloud(df)
+    close = df["close"].astype(float)
+    cpos = np.where(cl["top"].isna(), "n/a", np.where(close > cl["top"], "Above",
+                    np.where(close < cl["bottom"], "Below", "Center")))
     T = df["date"].tolist()
     O = df["open"].astype(float).to_numpy()
     open_off = pd.Timedelta(hours=9) if ex == "MCX" else pd.Timedelta(hours=9, minutes=15)
@@ -962,8 +986,8 @@ def _bt_candidates(it, df, cfg, start, end, order):
             continue
         rec = {"symbol": sym, "exchange": ex, "candle": ts,
                "pattern": "+".join(p for p in pats if bool(sig[p].iat[i])),
-               "cloud": (cpos[i] if cpos is not None else "")}
-        if cpos is not None and cpos[i] not in cloud_sel:
+               "cloud": cpos[i]}
+        if cloud_sel and cpos[i] not in cloud_sel:
             skipped.append({**rec, "status": f"SKIPPED (cloud {cpos[i]} - filter needs {' / '.join(cloud_sel)})"})
             continue
         cend = candle_end(ts, tf, ex)
@@ -1033,7 +1057,7 @@ def run_backtest(smart, cfg, items, exchange, d_from, d_to, precise=False, progr
     """-> dict(trades, signals, errors). precise=True walks 1-minute candles for target / SL (slower, closer to live)."""
     tf = pd.Timedelta(minutes=cfg.tf_min)
     start, end = pd.Timestamp(d_from), pd.Timestamp(d_to) + pd.Timedelta(days=1)          # end = exclusive
-    warm = pd.Timedelta(days=(CLOUD_DAYS.get(cfg.interval, 10) + 5) if cfg.cloud_filter else 10)
+    warm = pd.Timedelta(days=CLOUD_DAYS.get(cfg.interval, 10) + 5)      # always load enough history for the reference cloud column
     tail = pd.Timedelta(days=int(cfg.max_hold) * 2 + 5)                                    # room for exits after To date
     load_to = min(end + tail, now_ist() + pd.Timedelta(days=1))
     errors, cands, sigs, bars = [], [], [], {}
